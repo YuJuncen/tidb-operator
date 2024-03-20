@@ -122,18 +122,15 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 			}, nil)
 			return err
 		}
-		// restore based on volume snapshot for cloud provider when is not checking wal only
-		if restore.Spec.WarmupStrategy != v1alpha1.RestoreWarmupStrategyCheckOnly {
-			reason, err := rm.volumeSnapshotRestore(restore, tc)
-			if err != nil {
-				rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{
-					Type:    v1alpha1.RestoreRetryFailed,
-					Status:  corev1.ConditionTrue,
-					Reason:  reason,
-					Message: err.Error(),
-				}, nil)
-				return err
-			}
+		reason, err := rm.volumeSnapshotRestore(restore, tc)
+		if err != nil {
+			rm.statusUpdater.Update(restore, &v1alpha1.RestoreCondition{
+				Type:    v1alpha1.RestoreRetryFailed,
+				Status:  corev1.ConditionTrue,
+				Reason:  reason,
+				Message: err.Error(),
+			}, nil)
+			return err
 		}
 		if !tc.PDAllMembersReady() {
 			return controller.RequeueErrorf("restore %s/%s: waiting for all PD members are ready in tidbcluster %s/%s", ns, name, tc.Namespace, tc.Name)
@@ -146,6 +143,9 @@ func (rm *restoreManager) syncRestoreJob(restore *v1alpha1.Restore) error {
 				}
 				if !v1alpha1.IsRestoreWarmUpComplete(restore) {
 					return rm.waitWarmUpJobsFinished(restore)
+				}
+				if restore.Spec.WarmupStrategy == v1alpha1.RestoreWarmupStrategyCheckOnly {
+					return rm.checkWALOnlyFinish(restore)
 				}
 			} else if isWarmUpAsync(restore) {
 				if !v1alpha1.IsRestoreWarmUpStarted(restore) {
@@ -1262,6 +1262,19 @@ func (rm *restoreManager) makeAsyncWarmUpJob(r *v1alpha1.Restore, tikvPod *corev
 	return warmUpJob, nil
 }
 
+func (rm *restoreManager) checkWALOnlyFinish(r *v1alpha1.Restore) error {
+	newStatus := &controller.RestoreUpdateStatus{
+		TimeCompleted: &metav1.Time{Time: time.Now()},
+	}
+	if err := rm.statusUpdater.Update(r, &v1alpha1.RestoreCondition{
+		Type:   v1alpha1.RestoreComplete,
+		Status: corev1.ConditionTrue,
+	}, newStatus); err != nil {
+		return fmt.Errorf("UpdateRestoreCompleteFailed for %s", err.Error())
+	}
+	return nil
+}
+
 func (rm *restoreManager) waitWarmUpJobsFinished(r *v1alpha1.Restore) error {
 	if r.Spec.Warmup == "" {
 		return nil
@@ -1276,8 +1289,11 @@ func (rm *restoreManager) waitWarmUpJobsFinished(r *v1alpha1.Restore) error {
 	if err != nil {
 		return err
 	}
+	if len(jobs) == 0 {
+		return fmt.Errorf("waiting for warmup job being created")
+	}
 	for _, job := range jobs {
-		jobFinished := false
+		finished := false
 		for _, condition := range job.Status.Conditions {
 			if condition.Type == batchv1.JobFailed {
 				err := fmt.Errorf("warmup job %s/%s failed", job.Namespace, job.Name)
@@ -1288,23 +1304,13 @@ func (rm *restoreManager) waitWarmUpJobsFinished(r *v1alpha1.Restore) error {
 					Message: err.Error(),
 				}, nil)
 				return err
-			} else if condition.Type == batchv1.JobComplete {
-				jobFinished = true
-				if r.Spec.WarmupStrategy == v1alpha1.RestoreWarmupStrategyCheckOnly {
-					// shortcut for restore TidbCluster completed
-					newStatus := &controller.RestoreUpdateStatus{
-						TimeCompleted: &metav1.Time{Time: time.Now()},
-					}
-					if err := rm.statusUpdater.Update(r, &v1alpha1.RestoreCondition{
-						Type:   v1alpha1.RestoreComplete,
-						Status: corev1.ConditionTrue,
-					}, newStatus); err != nil {
-						return fmt.Errorf("UpdateRestoreCompleteFailed for %s", err.Error())
-					}
-				}
+			}
+			if condition.Type == batchv1.JobComplete {
+				finished = true
+				continue
 			}
 		}
-		if !jobFinished {
+		if !finished {
 			if isWarmUpAsync(r) {
 				return nil
 			}

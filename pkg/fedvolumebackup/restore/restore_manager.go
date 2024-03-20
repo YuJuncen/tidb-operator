@@ -290,15 +290,26 @@ func (rm *restoreManager) waitRestoreTiKVComplete(volumeRestore *v1alpha1.Volume
 		}
 	}
 
+	walCheckCompleted := 0
 	for _, restoreMember := range restoreMembers {
 		restoreMemberName := restoreMember.restore.Name
 		k8sClusterName := restoreMember.k8sClusterName
+		// Here, it is possible restore already complete when warmup strategy is "check-wal-only".
+		if restoreMember.restore.Spec.WarmupStrategy == pingcapv1alpha1.RestoreWarmupStrategyCheckOnly &&
+			pingcapv1alpha1.IsRestoreComplete(restoreMember.restore) {
+			walCheckCompleted += 1
+			continue
+		}
 		if !pingcapv1alpha1.IsRestoreTiKVComplete(restoreMember.restore) {
 			return controller.IgnoreErrorf("restore member %s of cluster %s is not tikv complete", restoreMemberName, k8sClusterName)
 		}
 	}
-	// restore tikv complete
-	if !v1alpha1.IsVolumeRestoreTiKVComplete(volumeRestore) {
+
+	if walCheckCompleted == len(restoreMembers) {
+		// check wal complete, should we give it a special status?
+		rm.setVolumeRestoreComplete(&volumeRestore.Status)
+	} else if !v1alpha1.IsVolumeRestoreTiKVComplete(volumeRestore) {
+		// restore tikv complete
 		rm.setVolumeRestoreTiKVComplete(&volumeRestore.Status)
 	}
 
