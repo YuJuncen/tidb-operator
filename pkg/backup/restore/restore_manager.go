@@ -491,7 +491,8 @@ func (rm *restoreManager) volumeSnapshotRestore(r *v1alpha1.Restore, tc *v1alpha
 
 		if isWarmUpSync(r) {
 			if v1alpha1.IsRestoreWarmUpComplete(r) {
-				return rm.startTiKV(r, tc)
+
+				return rm.startTiKVIfNeeded(r, tc)
 			}
 			if v1alpha1.IsRestoreWarmUpStarted(r) {
 				return "", nil
@@ -514,14 +515,17 @@ func (rm *restoreManager) volumeSnapshotRestore(r *v1alpha1.Restore, tc *v1alpha
 		}
 		klog.Infof("Restore %s/%s prepare restore metadata finished", r.Namespace, r.Name)
 		if !isWarmUpSync(r) {
-			return rm.startTiKV(r, tc)
+			return rm.startTiKVIfNeeded(r, tc)
 		}
 	}
 
 	return "", nil
 }
 
-func (rm *restoreManager) startTiKV(r *v1alpha1.Restore, tc *v1alpha1.TidbCluster) (reason string, err error) {
+func (rm *restoreManager) startTiKVIfNeeded(r *v1alpha1.Restore, tc *v1alpha1.TidbCluster) (reason string, err error) {
+	if r.Spec.WarmupStrategy == v1alpha1.RestoreWarmupStrategyCheckOnly {
+		return "", nil
+	}
 	restoreMark := fmt.Sprintf("%s/%s", r.Namespace, r.Name)
 	if len(tc.GetAnnotations()) == 0 {
 		tc.Annotations = make(map[string]string)

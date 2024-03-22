@@ -131,6 +131,13 @@ func (rm *restoreManager) syncRestore(volumeRestore *v1alpha1.VolumeRestore) err
 		return err
 	}
 
+	// When playing check wal, we should stop here.
+	if volumeRestore.Spec.Template.WarmupStrategy == pingcapv1alpha1.RestoreWarmupStrategyCheckOnly {
+		klog.Infof("VolumeRestore %s/%s check WAL complete", ns, name)
+		v1alpha1.FinishVolumeRestoreStep(&volumeRestore.Status, v1alpha1.VolumeRestoreStepRestartTiKV)
+		return nil
+	}
+
 	memberUpdated, err := rm.executeRestoreDataPhase(ctx, volumeRestore, restoreMembers)
 	if err != nil {
 		return err
@@ -305,6 +312,7 @@ func (rm *restoreManager) waitRestoreTiKVComplete(volumeRestore *v1alpha1.Volume
 		}
 	}
 
+	klog.InfoS("all warm up tasks are completed.", "restore", volumeRestore.Name, "wal-check-only-completed", walCheckCompleted, "total", len(restoreMembers))
 	if walCheckCompleted == len(restoreMembers) {
 		// check wal complete, should we give it a special status?
 		rm.setVolumeRestoreComplete(&volumeRestore.Status)
